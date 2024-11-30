@@ -2,6 +2,11 @@ import csv
 import pandas as pd
 import typing
 from enum import Enum
+from datasketch import MinHash
+from datasketch import MinHashLSH
+
+from lexrank import find_rank
+
 
 
 class Criteria(Enum):
@@ -9,6 +14,7 @@ class Criteria(Enum):
     PHONE = 2
     INFO_EXACT = 3
     LEXRANK = 4
+    NAME_EXACT_AND_STREET_NAME = 5
 
 # 2: transaction_reference_id,party_role,party_info_unstructured,
 # 8: parsed_name,parsed_address_street_name,
@@ -25,6 +31,7 @@ class Party:
     phone: str = ""
 
     pname: str = ""
+    pname_rank: int = 0
     paddress_street_name: str = ""
     paddress_street_number: str = ""
     paddress_street_unit: str = ""
@@ -46,6 +53,8 @@ class Party:
         txt += f"ROLE: {self.role}\n"
         txt += f"IBAN: {self.iban}\n"
         txt += f"INFO: {self.info_unstructured}\n"
+        txt += f"NAME: {self.pname} - {self.pname_rank}\n"
+        txt += f"STREET NAME: {self.paddress_street_name}\n"
         txt += f"PHONE: {self.phone} -> {self.format_phone()}\n"
         txt += f"EID: {self.eid}\n"
         txt += "=" * 20
@@ -101,97 +110,6 @@ class Entity:
         txt += "-" * 30 + "\n"
         return txt
 
-
-"""
-group by same info field
-assumption: a party is an entity
-"""
-
-
-def byinfo(data: typing.List[Entity]) -> typing.List[Entity]:
-
-    group: typing.Dict[str, typing.List[Entity]] = {}
-
-    print(len(data))
-
-    # group by phone
-    for bigent in data:
-        for p in bigent.parties:
-            criteria = p.info_unstructured
-            if criteria in group:
-                # put the whole entity
-                if bigent not in group[criteria]:
-                    group[criteria].append(bigent)
-            else:
-                group[criteria] = [bigent]
-
-    print(len(group))
-    count = 0
-    tot = 0
-    entities: typing.List[Entity] = []
-    # merge by group
-    for i in group:
-        bigent: Entity = Entity()
-        for ent in group[i]:
-            bigent.parties += ent.parties
-
-        entities.append(bigent)
-
-        if len(group[i]) > 1:
-            count += 1
-            tot += len(group[i])
-
-    print(f"by info\n\t{tot} -> {count}\n\t{len(data)} -> {len(entities)}")
-
-    assert len(data) >= len(entities)
-    return entities
-
-
-"""
-group by same phone field
-assumption: a party is an entity
-"""
-
-
-def byphone(data: typing.List[Entity]) -> typing.List[Entity]:
-
-    group: typing.Dict[str, typing.List[Entity]] = {}
-
-    print(len(data))
-
-    # group by phone
-    for bigent in data:
-        for p in bigent.parties:
-            phone = p.format_phone()
-            if phone in group:
-                # put the whole entity
-                if bigent not in group[phone]:
-                    group[phone].append(bigent)
-            else:
-                group[phone] = [bigent]
-
-    print(len(group))
-    count = 0
-    tot = 0
-    entities: typing.List[Entity] = []
-    # merge by group
-    for i in group:
-        bigent: Entity = Entity()
-        for ent in group[i]:
-            bigent.parties += ent.parties
-
-        entities.append(bigent)
-
-        if len(group[i]) > 1:
-            count += 1
-            tot += len(group[i])
-
-    print(f"by phone\n\t{tot} -> {count}\n\t{len(data)} -> {len(entities)}")
-
-    assert len(data) >= len(entities)
-    return entities
-
-
 def getcriteria(ent: Party, criteria: Criteria) -> str | None:
     match criteria:
         case Criteria.IBAN:
@@ -207,12 +125,16 @@ def getcriteria(ent: Party, criteria: Criteria) -> str | None:
                 return None
             return ent.info_unstructured
         case Criteria.LEXRANK:
-            if
+            if ent.pname == "":
+                return None
+            return str(ent.pname_rank)
+        case Criteria.NAME_EXACT_AND_STREET_NAME:
+            if ent.pname == "" or ent.paddress_street_name == "":
+                return None
+            return (ent.pname + ent.paddress_street_name).replace(" ", "")
         case _:
             return None
 
-
-def rankallwords() -> int:
 
 
 def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]:
@@ -234,7 +156,7 @@ def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]
                         print(e)
                     print("~" * 40 + "\n\n")
                     raise Exception(
-                        f"Ohhhhhh too much: {len(group[criteria])}")
+                        f"Ohhhhhh too much 1: {len(group[criteria])}")
             else:
                 # print(f"WARNING: Listen girl not None: {crit}")
                 pass
@@ -278,7 +200,7 @@ def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]
                 for e in group[i]:
                     print(e)
                 print("~" * 40 + "\n\n")
-                raise Exception(f"Ohhhhhh too much: {len(group[i])}")
+                raise Exception(f"Ohhhhhh too much 2: {len(group[i])}")
 
     for d in data:
         if d not in revmap:
@@ -291,75 +213,6 @@ def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]
     print(len(entities))
     print("=" * 40)
 
-    return entities
-    return group
-
-
-"""
-group by same iban field
-assumption: a party is an entity
-"""
-
-
-def byiban(data: typing.List[Entity]) -> typing.List[Entity]:
-
-    group: typing.Dict[str, typing.List[Entity]] = {}
-
-    # group by info
-    for bigent in data:
-        for p in bigent.parties:
-            criteria = p.iban
-            if criteria in group:
-                # put the whole entity
-                if bigent not in group[criteria]:
-                    group[criteria].append(bigent)
-            else:
-                group[criteria] = [bigent]
-
-    print("iban groups", len(group))
-    count = 0
-    tot = 0
-    entities: typing.List[Entity] = []
-    revmap: typing.Dict[Entity, Entity] = {}
-
-    # merge by group
-    for i in group:
-        bigent: Entity = Entity()
-        collect: None | Entity = None
-        should_add = False
-        # collect
-        for ent in group[i]:
-            if ent in revmap:
-                collect = revmap[ent]
-            bigent.parties += ent.parties
-
-        if collect == None:
-            collect = bigent
-            should_add = True
-        for ent in group[i]:
-            if ent not in revmap:
-                if should_add == False:
-                    collect.parties += ent.parties
-                revmap[ent] = collect
-
-            # for party in ent.parties:
-            #     bigent.add_party(party)
-
-        if should_add:
-            # print(collect)
-            entities.append(collect)
-
-        if len(group[i]) > 1:
-            count += 1
-            tot += len(group[i])
-            # if len(group[i]) > 3:
-            #     for e in group[i]:
-            #         print(e)
-            #     print("~" * 40 + "\n\n")
-
-    print(f"by iban\n\t{tot} -> {count}\n\t{len(data)} -> {len(entities)}")
-
-    assert len(data) >= len(entities)
     return entities
 
 
@@ -380,12 +233,23 @@ def group_by_eid(eid_to_party):
     print(ss/count)
 
 
+# 2: transaction_reference_id,party_role,party_info_unstructured,
+# 8: parsed_name,parsed_address_street_name,
+# parsed_address_street_number,parsed_address_unit,parsed_address_postal_code,parsed_address_city,
+# parsed_address_state,parsed_address_country,
+# 3: party_iban,party_phone,external_id
 def parse_external_entity(line) -> Entity:
 
     party: Party = Party()
     party.tid = line[0]
     party.role = line[1]
     party.info_unstructured = line[2]
+    party.pname = line[3]
+    party.pname_rank = find_rank(party.pname)
+
+    party.paddress_street_name = line[4]
+    party.paddress_street_number = line[5]
+
     party.iban = line[11]
     party.phone = line[12]
     party.eid = line[13]
@@ -493,14 +357,12 @@ def main():
     n_parties = count_parties(entities_list)
 
     print(len(entities_list))
-
+    
     entities_list = bycriteria(entities_list, Criteria.PHONE)
-
     entities_list = bycriteria(entities_list, Criteria.IBAN)
-
     entities_list = bycriteria(entities_list, Criteria.INFO_EXACT)
-
-    entities_list = bycriteria(entities_list, Criteria.LEXRANK)
+    # entities_list = bycriteria(entities_list, Criteria.LEXRANK)
+    entities_list = bycriteria(entities_list, Criteria.NAME_EXACT_AND_STREET_NAME)
     # print_list(entities_list);
 
     n_parties_new = count_parties(entities_list)
