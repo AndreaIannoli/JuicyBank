@@ -1,6 +1,12 @@
 import csv
 import pandas as pd
 import typing
+from enum import Enum
+
+class Criteria(Enum):
+    IBAN = 1
+    PHONE = 2
+    INFO_EXACT = 3
 
 # 2: transaction_reference_id,party_role,party_info_unstructured,
 # 8: parsed_name,parsed_address_street_name,
@@ -87,8 +93,7 @@ class Entity:
         txt = ""
         for p in self.parties:
             txt += p.__str__() + "\n"
-            txt += "=" * 20 + "\n"
-        print(len(self.parties))
+        txt += (f"N. parties: {len(self.parties)}\n")
         txt += "-" * 30 + "\n"
         return txt
 
@@ -178,6 +183,103 @@ def byphone(data: typing.List[Entity]) -> typing.List[Entity]:
     assert len(data) >= len(entities)
     return entities
 
+def getcriteria(ent: Party, criteria: Criteria) -> str | None:
+    match criteria:
+        case Criteria.IBAN:
+            if ent.iban == "":
+                return None
+            return ent.iban
+        case Criteria.PHONE:
+            if ent.phone == "":
+                return None
+            return ent.format_phone()
+        case Criteria.INFO_EXACT:
+            if ent.info_unstructured == "":
+                return None
+            return ent.info_unstructured
+        case _:
+            return None
+
+
+def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]:
+    group: typing.Dict[str, typing.List[Entity]] = {}
+
+    # group by info 
+    for bigent in data:
+        for p in bigent.parties:
+            criteria: str | None = getcriteria(p, crit)
+            if criteria is not None:
+                if criteria in group:
+                    # put the whole entity
+                    if bigent not in group[criteria]:
+                        group[criteria].append(bigent)
+                else:
+                    group[criteria] = [bigent]
+                if len(group[criteria]) > 6:
+                    for e in group[criteria]:
+                        print(e)
+                    print("~" * 40 + "\n\n")
+                    raise Exception(f"Ohhhhhh too much: {len(group[criteria])}")
+            else:
+                # print(f"WARNING: Listen girl not None: {crit}")
+                pass
+
+    count = 0
+    tot = 0 
+    entities: typing.List[Entity] = []
+    revmap: typing.Dict[Entity, Entity] = {}
+
+    # merge by group
+    for i in group:
+        bigent: Entity = Entity()
+        collect: None | Entity = None
+        should_add = False
+        # collect 
+        for ent in group[i]:
+            if ent in revmap:
+                collect = revmap[ent]
+            bigent.parties += ent.parties
+
+        if collect == None:
+            collect = bigent
+            should_add = True
+        for ent in group[i]:
+            if ent not in revmap:
+                if should_add == False:
+                    collect.parties += ent.parties
+                revmap[ent] = collect
+
+            # for party in ent.parties:
+            #     bigent.add_party(party)
+
+        if should_add:
+            # print(collect)
+            entities.append(collect)
+
+        if len(group[i]) > 1:
+            count +=1 
+            tot += len(group[i])
+            if len(group[i]) > 6:
+                for e in group[i]:
+                    print(e)
+                print("~" * 40 + "\n\n")
+                raise Exception(f"Ohhhhhh too much: {len(group[i])}")
+
+    for d in data:
+        if d not in revmap:
+            entities.append(d)
+
+
+    print(f"by {crit}\n\t{tot} -> {count}\n\t{len(data)} -> {len(entities)}")
+
+    assert len(data) >= len(entities)
+
+    print(len(entities))
+    print("="* 40)
+
+    return entities
+    return group
+
 """
 group by same iban field
 assumption: a party is an entity
@@ -220,18 +322,24 @@ def byiban(data: typing.List[Entity]) -> typing.List[Entity]:
             should_add = True
         for ent in group[i]:
             if ent not in revmap:
-                collect.parties += ent.parties
+                if should_add == False:
+                    collect.parties += ent.parties
                 revmap[ent] = collect
 
             # for party in ent.parties:
             #     bigent.add_party(party)
 
         if should_add:
+            # print(collect)
             entities.append(collect)
 
         if len(group[i]) > 1:
             count +=1 
             tot += len(group[i])
+            # if len(group[i]) > 3:
+            #     for e in group[i]:
+            #         print(e)
+            #     print("~" * 40 + "\n\n")
 
     print(f"by iban\n\t{tot} -> {count}\n\t{len(data)} -> {len(entities)}")
 
@@ -273,8 +381,28 @@ def parse_external_entity(line) -> Entity:
 
 def print_list(entities: typing.List[Entity]):
     for l in entities:
-        print(l)
+        if len(l.parties) > 2:
+            print(l)
             
+def count_parties(entities: typing.List[Entity]) -> int:
+    s: int = 0
+    for l in entities:
+        s += len(l.parties)
+    return s
+
+def verify(entities: typing.List[Entity]) -> bool:
+    for l in entities:
+        eid = None
+        for p in l.parties:
+            if eid == None:
+                eid = p.eid
+            elif eid != p.eid:
+                print(f"Error girll -> {eid} != {p.eid}")
+                print(l)
+                return False
+
+    return True
+
 
 def main():
 
@@ -345,18 +473,23 @@ def main():
 
     # group_by_eid(eid_to_party)
 
-    print(len(entities_list))
-    # print(len(entities_list[0].parties))
-    entities_list = byinfo(entities_list);
-    print(len(entities_list))
-    print("="* 40)
-    entities_list = byphone(entities_list);
-    print(len(entities_list))
-    print("="* 40)
-    entities_list = byiban(entities_list);
-    print(len(entities_list))
-    print("="* 40)
+    n_parties = count_parties(entities_list)
 
-    print_list(entities_list);
+    print(len(entities_list))
+
+
+    entities_list = bycriteria(entities_list, Criteria.PHONE);
+
+    entities_list = bycriteria(entities_list, Criteria.IBAN);
+
+    entities_list = bycriteria(entities_list, Criteria.INFO_EXACT);
+
+    # print_list(entities_list);
+
+    n_parties_new = count_parties(entities_list)
+    print(f"{n_parties} -> {n_parties_new}")
+
+    assert n_parties == n_parties_new
+    assert verify(entities_list)
 
 main()
