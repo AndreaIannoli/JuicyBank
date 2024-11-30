@@ -3,16 +3,20 @@ import pandas as pd
 import typing
 from enum import Enum
 
+
 class Criteria(Enum):
     IBAN = 1
     PHONE = 2
     INFO_EXACT = 3
+    LEXRANK = 4
 
 # 2: transaction_reference_id,party_role,party_info_unstructured,
 # 8: parsed_name,parsed_address_street_name,
 # parsed_address_street_number,parsed_address_unit,parsed_address_postal_code,parsed_address_city,
 # parsed_address_state,parsed_address_country,
 # 3: party_iban,party_phone,external_id
+
+
 class Party:
     tid: str = ""
     role: str = ""
@@ -29,14 +33,14 @@ class Party:
     paddress_state: str = ""
     paddress_country: str = ""
 
-    # A label assigned to each external party in the training dataset. 
+    # A label assigned to each external party in the training dataset.
     # This label groups external parties that refer to the same underlying entity
-    # (i.e., they represent the same physical or moral entity). 
+    # (i.e., they represent the same physical or moral entity).
     # This field is only available in the training dataset and is the target
     # for your model’s predictions
     eid: str = ""
 
-    def __str__(self):  
+    def __str__(self):
         txt = ""
         txt += f"TID: {self.tid}\n"
         txt += f"ROLE: {self.role}\n"
@@ -57,7 +61,6 @@ class Party:
         for s in ss:
             res += self.format_phone_aux(s)
         return res
-
 
     def to_dict(self):
         return {
@@ -82,6 +85,7 @@ class Party:
     def to_pd(self):
         return pd.DataFrame(self.to_dict(), index=[0])
 
+
 class Entity:
     def __init__(self):
         self.parties: typing.List[Party] = []
@@ -89,7 +93,7 @@ class Entity:
     def add_party(self, party: Party):
         self.parties.append(party)
 
-    def __str__(self):  
+    def __str__(self):
         txt = ""
         for p in self.parties:
             txt += p.__str__() + "\n"
@@ -97,17 +101,20 @@ class Entity:
         txt += "-" * 30 + "\n"
         return txt
 
+
 """
 group by same info field
 assumption: a party is an entity
 """
+
+
 def byinfo(data: typing.List[Entity]) -> typing.List[Entity]:
 
     group: typing.Dict[str, typing.List[Entity]] = {}
 
     print(len(data))
 
-    # group by phone 
+    # group by phone
     for bigent in data:
         for p in bigent.parties:
             criteria = p.info_unstructured
@@ -118,10 +125,9 @@ def byinfo(data: typing.List[Entity]) -> typing.List[Entity]:
             else:
                 group[criteria] = [bigent]
 
-
     print(len(group))
     count = 0
-    tot = 0 
+    tot = 0
     entities: typing.List[Entity] = []
     # merge by group
     for i in group:
@@ -132,7 +138,7 @@ def byinfo(data: typing.List[Entity]) -> typing.List[Entity]:
         entities.append(bigent)
 
         if len(group[i]) > 1:
-            count +=1 
+            count += 1
             tot += len(group[i])
 
     print(f"by info\n\t{tot} -> {count}\n\t{len(data)} -> {len(entities)}")
@@ -140,17 +146,20 @@ def byinfo(data: typing.List[Entity]) -> typing.List[Entity]:
     assert len(data) >= len(entities)
     return entities
 
+
 """
 group by same phone field
 assumption: a party is an entity
 """
+
+
 def byphone(data: typing.List[Entity]) -> typing.List[Entity]:
 
     group: typing.Dict[str, typing.List[Entity]] = {}
 
     print(len(data))
 
-    # group by phone 
+    # group by phone
     for bigent in data:
         for p in bigent.parties:
             phone = p.format_phone()
@@ -161,10 +170,9 @@ def byphone(data: typing.List[Entity]) -> typing.List[Entity]:
             else:
                 group[phone] = [bigent]
 
-
     print(len(group))
     count = 0
-    tot = 0 
+    tot = 0
     entities: typing.List[Entity] = []
     # merge by group
     for i in group:
@@ -175,13 +183,14 @@ def byphone(data: typing.List[Entity]) -> typing.List[Entity]:
         entities.append(bigent)
 
         if len(group[i]) > 1:
-            count +=1 
+            count += 1
             tot += len(group[i])
 
     print(f"by phone\n\t{tot} -> {count}\n\t{len(data)} -> {len(entities)}")
 
     assert len(data) >= len(entities)
     return entities
+
 
 def getcriteria(ent: Party, criteria: Criteria) -> str | None:
     match criteria:
@@ -197,14 +206,19 @@ def getcriteria(ent: Party, criteria: Criteria) -> str | None:
             if ent.info_unstructured == "":
                 return None
             return ent.info_unstructured
+        case Criteria.LEXRANK:
+            if
         case _:
             return None
+
+
+def rankallwords() -> int:
 
 
 def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]:
     group: typing.Dict[str, typing.List[Entity]] = {}
 
-    # group by info 
+    # group by info
     for bigent in data:
         for p in bigent.parties:
             criteria: str | None = getcriteria(p, crit)
@@ -219,13 +233,14 @@ def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]
                     for e in group[criteria]:
                         print(e)
                     print("~" * 40 + "\n\n")
-                    raise Exception(f"Ohhhhhh too much: {len(group[criteria])}")
+                    raise Exception(
+                        f"Ohhhhhh too much: {len(group[criteria])}")
             else:
                 # print(f"WARNING: Listen girl not None: {crit}")
                 pass
 
     count = 0
-    tot = 0 
+    tot = 0
     entities: typing.List[Entity] = []
     revmap: typing.Dict[Entity, Entity] = {}
 
@@ -234,7 +249,7 @@ def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]
         bigent: Entity = Entity()
         collect: None | Entity = None
         should_add = False
-        # collect 
+        # collect
         for ent in group[i]:
             if ent in revmap:
                 collect = revmap[ent]
@@ -257,7 +272,7 @@ def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]
             entities.append(collect)
 
         if len(group[i]) > 1:
-            count +=1 
+            count += 1
             tot += len(group[i])
             if len(group[i]) > 6:
                 for e in group[i]:
@@ -269,26 +284,28 @@ def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]
         if d not in revmap:
             entities.append(d)
 
-
     print(f"by {crit}\n\t{tot} -> {count}\n\t{len(data)} -> {len(entities)}")
 
     assert len(data) >= len(entities)
 
     print(len(entities))
-    print("="* 40)
+    print("=" * 40)
 
     return entities
     return group
+
 
 """
 group by same iban field
 assumption: a party is an entity
 """
+
+
 def byiban(data: typing.List[Entity]) -> typing.List[Entity]:
 
     group: typing.Dict[str, typing.List[Entity]] = {}
 
-    # group by info 
+    # group by info
     for bigent in data:
         for p in bigent.parties:
             criteria = p.iban
@@ -299,10 +316,9 @@ def byiban(data: typing.List[Entity]) -> typing.List[Entity]:
             else:
                 group[criteria] = [bigent]
 
-
     print("iban groups", len(group))
     count = 0
-    tot = 0 
+    tot = 0
     entities: typing.List[Entity] = []
     revmap: typing.Dict[Entity, Entity] = {}
 
@@ -311,7 +327,7 @@ def byiban(data: typing.List[Entity]) -> typing.List[Entity]:
         bigent: Entity = Entity()
         collect: None | Entity = None
         should_add = False
-        # collect 
+        # collect
         for ent in group[i]:
             if ent in revmap:
                 collect = revmap[ent]
@@ -334,7 +350,7 @@ def byiban(data: typing.List[Entity]) -> typing.List[Entity]:
             entities.append(collect)
 
         if len(group[i]) > 1:
-            count +=1 
+            count += 1
             tot += len(group[i])
             # if len(group[i]) > 3:
             #     for e in group[i]:
@@ -351,7 +367,7 @@ def group_by_eid(eid_to_party):
     ss = 0
     count = 0
     for ep in eid_to_party:
-        ss += len(eid_to_party[ep]) 
+        ss += len(eid_to_party[ep])
         count += 1
         if len(eid_to_party[ep]) > 1:
             print(ep)
@@ -364,31 +380,33 @@ def group_by_eid(eid_to_party):
     print(ss/count)
 
 
-
 def parse_external_entity(line) -> Entity:
 
     party: Party = Party()
     party.tid = line[0]
     party.role = line[1]
-    party.info_unstructured= line[2]
+    party.info_unstructured = line[2]
     party.iban = line[11]
-    party.phone= line[12]
-    party.eid= line[13]
+    party.phone = line[12]
+    party.eid = line[13]
 
     entity: Entity = Entity()
     entity.add_party(party)
-    return entity 
+    return entity
+
 
 def print_list(entities: typing.List[Entity]):
     for l in entities:
         if len(l.parties) > 2:
             print(l)
-            
+
+
 def count_parties(entities: typing.List[Entity]) -> int:
     s: int = 0
     for l in entities:
         s += len(l.parties)
     return s
+
 
 def verify(entities: typing.List[Entity]) -> bool:
     for l in entities:
@@ -414,15 +432,15 @@ def main():
     eids = {}
     aids = {}
 
-    entities:typing.Dict[str, Entity]  = {}
+    entities: typing.Dict[str, Entity] = {}
 
     eid_to_party = {}
 
     twolegs = []
     orphans = []
     sus = []
-   
-    first =True 
+
+    first = True
     for line in eptr:
         if first:
             first = False
@@ -431,9 +449,8 @@ def main():
         eids[id] = True
         entities[id] = parse_external_entity(line)
 
-
     # two legs
-    first =True 
+    first = True
     for line in abtr:
         if first:
             first = False
@@ -477,13 +494,13 @@ def main():
 
     print(len(entities_list))
 
+    entities_list = bycriteria(entities_list, Criteria.PHONE)
 
-    entities_list = bycriteria(entities_list, Criteria.PHONE);
+    entities_list = bycriteria(entities_list, Criteria.IBAN)
 
-    entities_list = bycriteria(entities_list, Criteria.IBAN);
+    entities_list = bycriteria(entities_list, Criteria.INFO_EXACT)
 
-    entities_list = bycriteria(entities_list, Criteria.INFO_EXACT);
-
+    entities_list = bycriteria(entities_list, Criteria.LEXRANK)
     # print_list(entities_list);
 
     n_parties_new = count_parties(entities_list)
@@ -491,5 +508,6 @@ def main():
 
     assert n_parties == n_parties_new
     assert verify(entities_list)
+
 
 main()
