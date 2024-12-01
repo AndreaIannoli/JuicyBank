@@ -1,20 +1,32 @@
 import csv
+from tokenize import group
 import pandas as pd
 import typing
+import numpy as np
 from enum import Enum
-from datasketch import MinHash
-from datasketch import MinHashLSH
+from collections import Counter
+import jellyfish
+from fuzzywuzzy import fuzz
+import pickle
 
-from lexrank import find_rank
+# from lsh import lsh
+from lsh_new import lsh
 
-
+allwords = []
+lshsets = {}
 
 class Criteria(Enum):
     IBAN = 1
     PHONE = 2
     INFO_EXACT = 3
-    LEXRANK = 4
+    DUMB_RANKING = 4
     NAME_EXACT_AND_STREET_NAME = 5
+    EVIL_CORP = 6
+    ADDRESS = 7
+    NAME_MOD = 8
+    NAME_EXACT_AND_STREET_CODE = 9
+    NAME_EXACT_AND_CITY = 10
+    LSH_SECRET = 11
 
 # 2: transaction_reference_id,party_role,party_info_unstructured,
 # 8: parsed_name,parsed_address_street_name,
@@ -22,6 +34,14 @@ class Criteria(Enum):
 # parsed_address_state,parsed_address_country,
 # 3: party_iban,party_phone,external_id
 
+
+def dumb_ranking(name: str) -> str:
+    rank = 0
+    i = 0
+    for s in name.replace(" ", ""):
+        i += 1
+        rank += i+ord(s)
+    return str(len(name)) + str(rank)
 
 class Party:
     tid: str = ""
@@ -31,14 +51,18 @@ class Party:
     phone: str = ""
 
     pname: str = ""
-    pname_rank: int = 0
+    pname_mod: str = ""
     paddress_street_name: str = ""
     paddress_street_number: str = ""
     paddress_street_unit: str = ""
     paddress_street_postal_code: str = ""
     paddress_city: str = ""
+    paddress_city_mod: str = ""
     paddress_state: str = ""
     paddress_country: str = ""
+
+    isevilcorp: bool = False
+    ranking: str = ""
 
     # A label assigned to each external party in the training dataset.
     # This label groups external parties that refer to the same underlying entity
@@ -53,8 +77,15 @@ class Party:
         txt += f"ROLE: {self.role}\n"
         txt += f"IBAN: {self.iban}\n"
         txt += f"INFO: {self.info_unstructured}\n"
-        txt += f"NAME: {self.pname} - {self.pname_rank}\n"
+        txt += f"NAME: {self.pname} - '{self.ranking}'\n"
+        txt += f"NAME MOD: {self.pname_mod}\n"
         txt += f"STREET NAME: {self.paddress_street_name}\n"
+        txt += f"STREET NUM: {self.paddress_street_number}\n"
+        txt += f"STREET UNIT: {self.paddress_street_unit}\n"
+        txt += f"STREET CODE: {self.paddress_street_postal_code}\n"
+        txt += f"CITY: {self.paddress_city}\n"
+        txt += f"STATE: {self.paddress_state}\n"
+        txt += f"COUNTRY: {self.paddress_country}\n"
         txt += f"PHONE: {self.phone} -> {self.format_phone()}\n"
         txt += f"EID: {self.eid}\n"
         txt += "=" * 20
@@ -110,6 +141,10 @@ class Entity:
         txt += "-" * 30 + "\n"
         return txt
 
+def isevilcorp(name: str) -> bool:
+    evilcorpnouns = ["corp", "inc", "ltd", "firm"]
+    return any(substring in name for substring in evilcorpnouns)
+
 def getcriteria(ent: Party, criteria: Criteria) -> str | None:
     match criteria:
         case Criteria.IBAN:
@@ -123,18 +158,174 @@ def getcriteria(ent: Party, criteria: Criteria) -> str | None:
         case Criteria.INFO_EXACT:
             if ent.info_unstructured == "":
                 return None
-            return ent.info_unstructured
-        case Criteria.LEXRANK:
-            if ent.pname == "":
+            return ent.info_unstructured.replace(" ", "")
+        case Criteria.DUMB_RANKING:
+            if ent.ranking == "":
                 return None
-            return str(ent.pname_rank)
+            return ent.ranking
         case Criteria.NAME_EXACT_AND_STREET_NAME:
-            if ent.pname == "" or ent.paddress_street_name == "":
+            if ent.pname_mod == "" or ent.paddress_street_name == "":
                 return None
-            return (ent.pname + ent.paddress_street_name).replace(" ", "")
+            return (ent.pname_mod + ent.paddress_street_name).replace(" ", "")
+        case Criteria.NAME_EXACT_AND_STREET_CODE:
+            if ent.pname_mod == "" or ent.paddress_street_postal_code== "":
+                return None
+            return (ent.pname_mod + ent.paddress_street_postal_code).replace(" ", "")
+        case Criteria.EVIL_CORP:
+            if ent.pname_mod == "" or not ent.isevilcorp:
+                return None
+            return ent.pname_mod.replace(" ", "")
+        case Criteria.ADDRESS:
+            if ent.paddress_street_name == "" or ent.paddress_street_number == "":
+                return None
+            return (ent.paddress_street_name + ent.paddress_street_number).replace(" ", "")
+        case Criteria.NAME_MOD:
+            if ent.pname_mod == "" or not ent.isevilcorp or ent.paddress_street_postal_code == "":
+                return None
+            return (ent.pname_mod + ent.paddress_street_postal_code).replace(" ", "")
+        case Criteria.NAME_EXACT_AND_CITY:
+            if ent.pname_mod == "" or ent.paddress_city_mod == "":
+                return None
+            return (ent.pname_mod + ent.paddress_city_mod).replace(" ", "")
+        case Criteria.LSH_SECRET:
+            # nn = ent.pname.replace(" ", "")
+            # if ent.pname == "" or nn not in lshsets or ent.paddress_street_name == "":
+            #     return None
+            # new_name = ""
+            # new_name += str(lshsets[nn])
+            # return (new_name+ ent.paddress_street_name).replace(" ", "")
+            nn = ent.pname.replace(" ", "")
+            if ent.pname == "" or nn not in lshsets:
+                return None
+            new_name = ""
+            new_name += str(lshsets[nn])
+            return new_name
         case _:
             return None
 
+def comparebycity(p1: Party, p2: Party) -> bool:
+    ratio_name = p1.pname != "" and p2.pname != "" and fuzz.token_sort_ratio(p1.pname, p2.pname) > 80
+    tt = p1.paddress_street_number != "" and p2.paddress_street_number != "" and p1.paddress_street_number == p2.paddress_street_number and ratio_name
+    if tt:
+        return True
+    tt = p1.paddress_street_postal_code != "" and p2.paddress_street_postal_code != "" and p1.paddress_street_postal_code== p2.paddress_street_postal_code and ratio_name
+    return tt
+
+def comparebystate(p1: Party, p2: Party) -> bool:
+    ratio_name = p1.pname != "" and p2.pname != "" and fuzz.token_sort_ratio(p1.pname, p2.pname) > 80
+    tt = p1.paddress_street_number != "" and p2.paddress_street_number != "" and p1.paddress_street_number == p2.paddress_street_number and ratio_name
+    if tt:
+        return True
+    tt = p1.paddress_street_postal_code != "" and p2.paddress_street_postal_code != "" and p1.paddress_street_postal_code== p2.paddress_street_postal_code and ratio_name
+    return tt
+
+
+# try to add an alone entity to a group
+def findfriendsbycity(entities: typing.List[Entity]) -> typing.List[Entity]:
+
+    group_ent: typing.List[Entity] = []
+    alone_ent: typing.List[Entity] = []
+    for l in entities:
+        if len(l.parties) == 1:
+            alone_ent.append(l)
+        else:
+            group_ent.append(l)
+
+    citymap: typing.Dict[str, typing.List[Entity]] = {}
+    # for ent in entities:
+    for ent in group_ent:
+        for p in ent.parties:
+            if p.paddress_city != "":
+                if p.paddress_city not in citymap:
+                    citymap[p.paddress_city] = [ent]
+                elif ent not in citymap[p.paddress_city]:
+                    citymap[p.paddress_city].append(ent)
+
+    to_skip = {}
+    for l in alone_ent:
+        if l in to_skip:
+            continue
+        # if len(l.parties) == 1:
+        if l.parties[0].pname != "" and l.parties[0].paddress_city != "" and l.parties[0].paddress_city in citymap:
+            gg = citymap[l.parties[0].paddress_city]
+            stop = False
+            for n in gg:
+                if n in to_skip:
+                    continue
+                for p in n.parties:
+                    if l.parties[0].tid != p.tid and comparebycity(l.parties[0], p):
+                        n.parties += l.parties[:]
+                        alone_ent.remove(l)
+                        # to_skip[l] = True
+                        # to_skip[n] = True
+                        stop = True
+                        break
+                if stop == True:
+                    break
+
+    return alone_ent + group_ent
+
+def findfriendsbystate(entities: typing.List[Entity]) -> typing.List[Entity]:
+
+    group_ent: typing.List[Entity] = []
+    alone_ent: typing.List[Entity] = []
+    for l in entities:
+        if len(l.parties) == 1:
+            alone_ent.append(l)
+        else:
+            group_ent.append(l)
+
+    statemap: typing.Dict[str, typing.List[Entity]] = {}
+    # for ent in entities:
+    for ent in group_ent:
+        for p in ent.parties:
+            if p.paddress_state!= "":
+                if p.paddress_state not in statemap:
+                    statemap[p.paddress_state] = [ent]
+                elif ent not in statemap[p.paddress_state]:
+                    statemap[p.paddress_state].append(ent)
+
+    # print(statemap.keys())
+    if "marshallislands" in statemap:
+        print(len(statemap["marshallislands"]))
+    to_skip = {}
+    for l in alone_ent:
+        if l in to_skip:
+            continue
+        # if len(l.parties) == 1:
+        if l.parties[0].pname != "" and l.parties[0].paddress_state != "" and l.parties[0].paddress_state in statemap:
+            gg = statemap[l.parties[0].paddress_state]
+            stop = False
+            for n in gg:
+                if n in to_skip:
+                    continue
+                for p in n.parties:
+                    if l.parties[0].tid != p.tid and comparebystate(l.parties[0], p):
+                        n.parties += l.parties[:]
+                        alone_ent.remove(l)
+                        # to_skip[l] = True
+                        # to_skip[n] = True
+                        stop = True
+                        break
+                if stop == True:
+                    break
+
+    return alone_ent + group_ent
+
+def postprocessnames(entities: typing.List[Entity]) -> typing.List[Entity]:
+
+    for l in entities:
+        for p in l.parties:
+            if p.pname != "" and p.pname in lshsets:
+                p.pname_mod = str(lshsets[p.pname])
+            else:
+                p.pname_mod = p.pname
+            if p.paddress_city != "" and p.paddress_city in lshsets:
+                p.paddress_city_mod = str(lshsets[p.paddress_city])
+            else:
+                p.paddress_city_mod = p.paddress_city
+
+    return entities
 
 
 def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]:
@@ -151,12 +342,12 @@ def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]
                         group[criteria].append(bigent)
                 else:
                     group[criteria] = [bigent]
-                if len(group[criteria]) > 6:
-                    for e in group[criteria]:
-                        print(e)
-                    print("~" * 40 + "\n\n")
-                    raise Exception(
-                        f"Ohhhhhh too much 1: {len(group[criteria])}")
+                # if len(group[criteria]) > 6:
+                #     for e in group[criteria]:
+                #         print(e)
+                #     print("~" * 40 + "\n\n")
+                #     raise Exception(
+                #         f"Ohhhhhh too much 1: {len(group[criteria])}")
             else:
                 # print(f"WARNING: Listen girl not None: {crit}")
                 pass
@@ -196,11 +387,11 @@ def bycriteria(data: typing.List[Entity], crit: Criteria) -> typing.List[Entity]
         if len(group[i]) > 1:
             count += 1
             tot += len(group[i])
-            if len(group[i]) > 6:
-                for e in group[i]:
-                    print(e)
-                print("~" * 40 + "\n\n")
-                raise Exception(f"Ohhhhhh too much 2: {len(group[i])}")
+            # if len(group[i]) > 6:
+            #     for e in group[i]:
+            #         print(e)
+            #     print("~" * 40 + "\n\n")
+            #     raise Exception(f"Ohhhhhh too much 2: {len(group[i])}")
 
     for d in data:
         if d not in revmap:
@@ -233,6 +424,21 @@ def group_by_eid(eid_to_party):
     print(ss/count)
 
 
+def remove_duplicates(input: str) -> str:
+ 
+    # split input string separated by space
+    ss = input.split(" ")
+ 
+    # now create dictionary using counter method
+    # which will have strings as key and their 
+    # frequencies as value
+    UniqW = Counter(ss)
+ 
+    # joins two adjacent elements in iterable way
+    s = " ".join(UniqW.keys())
+    return s
+
+
 # 2: transaction_reference_id,party_role,party_info_unstructured,
 # 8: parsed_name,parsed_address_street_name,
 # parsed_address_street_number,parsed_address_unit,parsed_address_postal_code,parsed_address_city,
@@ -241,18 +447,43 @@ def group_by_eid(eid_to_party):
 def parse_external_entity(line) -> Entity:
 
     party: Party = Party()
-    party.tid = line[0]
-    party.role = line[1]
-    party.info_unstructured = line[2]
-    party.pname = line[3]
-    party.pname_rank = find_rank(party.pname)
+    party.tid = line[0].lower()
+    party.role = line[1].lower()
+    party.info_unstructured = line[2].lower()
+    party.pname = line[3].lower()
 
-    party.paddress_street_name = line[4]
-    party.paddress_street_number = line[5]
+    party.paddress_street_name = line[4].lower().replace(" ", "")
+    party.paddress_street_number = line[5].lower().replace(" ", "")
+    party.paddress_street_unit = line[6].lower().replace(" ", "")
+    party.paddress_street_postal_code = line[7].lower().replace(" ", "")
 
-    party.iban = line[11]
-    party.phone = line[12]
-    party.eid = line[13]
+    party.paddress_city = line[8].lower().replace(" ", "")
+    if party.paddress_city != "":
+        allwords.append(party.paddress_city.replace(" ", ""))
+
+
+    party.paddress_state = line[9].lower().replace(" ", "")
+    party.paddress_country = line[10].lower().replace(" ", "")
+
+    party.iban = line[11].lower()
+    party.phone = line[12].lower()
+    if len(line) >= 14:
+        party.eid = line[13]
+
+
+    if party.pname != "":
+        party.pname = party.pname.replace('mr. ', '')
+        party.pname = party.pname.replace('ms. ', '')
+        party.pname = party.pname.replace('mrs. ', '')
+        party.pname = party.pname.replace('miss ', '')
+        party.pname = party.pname.replace('dr. ', '')
+        party.pname = party.pname.replace('prof. ', '')
+        party.pname = party.pname.replace('rev. ', '')
+        party.pname = party.pname.replace('hon. ', '')
+
+
+        party.isevilcorp = isevilcorp(party.pname)
+        allwords.append(party.pname.replace(" ", ""))
 
     entity: Entity = Entity()
     entity.add_party(party)
@@ -271,6 +502,28 @@ def count_parties(entities: typing.List[Entity]) -> int:
         s += len(l.parties)
     return s
 
+def show_singleton(entities: typing.List[Entity], eid_list: typing.Dict[str, typing.List[Entity]]):
+    alone = 0
+    for l in entities:
+        check = l.parties[0].paddress_city != "" and (l.parties[0].paddress_street_name != "" or l.parties[0].paddress_street_number != "" or  l.parties[0].paddress_street_unit != "" or  l.parties[0].paddress_street_postal_code != "" )
+        if len(l.parties) == 1 and len(eid_list[l.parties[0].eid]) > 1 and check:
+            print(l)
+            print("?"* 40 + "\n")
+            for e in eid_list[l.parties[0].eid]:
+                if e != l.parties[0]:
+                    print(e.__str__().replace("\n", "\n\t"))
+            print("|"* 40 + "\n")
+        if len(l.parties) == 1:
+            alone +=1
+    print(f"Alone: {alone}")
+
+def remove_singleton(entities: typing.List[Entity]):
+    new_entities: typing.List[Entity] = []
+    for l in entities:
+        if len(l.parties) != 1:
+            new_entities.append(l)
+    return new_entities
+
 
 def verify(entities: typing.List[Entity]) -> bool:
     for l in entities:
@@ -288,8 +541,15 @@ def verify(entities: typing.List[Entity]) -> bool:
 
 def main():
 
-    ept = open("./raw/external_parties_train.csv", "r")
-    abt = open("./raw/account_booking_train.csv", "r")
+    istest = False
+    ept = {}
+    abt = {}
+    if istest :
+        ept = open("./raw/external_parties_test.csv", "r")
+        abt = open("./raw/account_booking_test.csv", "r")
+    else:
+        ept = open("./raw/external_parties_train.csv", "r")
+        abt = open("./raw/account_booking_train.csv", "r")
     eptr = csv.reader(ept, delimiter=',')
     abtr = csv.reader(abt, delimiter=',')
 
@@ -298,7 +558,7 @@ def main():
 
     entities: typing.Dict[str, Entity] = {}
 
-    eid_to_party = {}
+    eid_to_party: typing.Dict[str, typing.List[Entity]] = {}
 
     twolegs = []
     orphans = []
@@ -352,24 +612,65 @@ def main():
     ept.close()
     abt.close()
 
-    # group_by_eid(eid_to_party)
+
+    # result = lsh.query(minhash)
+    # nn = np.array(result)
+    # print(nn.shape)
+
 
     n_parties = count_parties(entities_list)
 
-    print(len(entities_list))
-    
+    global lshsets
+    # lshsets = lsh(allwords)
+    # print(lshsets)
+    # with open('file.pkl', 'rb') as file: 
+    #     lshsets = pickle.load(file)
+    print("lsh computed")
+
+    # entities_list = postprocessnames(entities_list)
+
     entities_list = bycriteria(entities_list, Criteria.PHONE)
     entities_list = bycriteria(entities_list, Criteria.IBAN)
     entities_list = bycriteria(entities_list, Criteria.INFO_EXACT)
-    # entities_list = bycriteria(entities_list, Criteria.LEXRANK)
     entities_list = bycriteria(entities_list, Criteria.NAME_EXACT_AND_STREET_NAME)
+    entities_list = bycriteria(entities_list, Criteria.ADDRESS)
+    entities_list = bycriteria(entities_list, Criteria.NAME_EXACT_AND_CITY)
+    entities_list = bycriteria(entities_list, Criteria.NAME_EXACT_AND_STREET_CODE)
     # print_list(entities_list);
+
+    # group_by_eid(eid_to_party)
+
+    entities_list = findfriendsbycity(entities_list)
+    entities_list = findfriendsbycity(entities_list)
+    entities_list = findfriendsbystate(entities_list)
+    entities_list = findfriendsbystate(entities_list)
+    # entities_list = findfriends(entities_list)
+    # entities_list = findfriends(entities_list)
+
+    # print(lshsets)
+
+    # print(lshsets['joshualopez'])
+    # print(lshsets['joshualopez'])
+
+
+    # show_singleton(entities_list, eid_to_party)
+
+    # print(len(entities_list))
+
+    # entities_list = remove_singleton(entities_list)
 
     n_parties_new = count_parties(entities_list)
     print(f"{n_parties} -> {n_parties_new}")
+    print(len(entities_list))
+
+    # with open('file.pkl', 'wb') as file:
+    #     pickle.dump(lshsets, file)
 
     assert n_parties == n_parties_new
-    assert verify(entities_list)
+    if not istest:
+        assert verify(entities_list)
+
+    print("passed")
 
 
 main()
